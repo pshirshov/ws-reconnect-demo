@@ -22,6 +22,7 @@ export class ConnectionManager {
   private wsUrl: string;
   private config: ConnectionConfig;
   private frozen = false;
+  private destroyed = false;
 
   private logEntries: LogEntry[] = [];
   private static readonly MAX_LOG_ENTRIES = 500;
@@ -156,6 +157,8 @@ export class ConnectionManager {
   }
 
   destroy(): void {
+    this.destroyed = true;
+
     if (this.tickIntervalId) clearInterval(this.tickIntervalId);
     if (this.cleanupIntervalId) clearInterval(this.cleanupIntervalId);
     if (this.reconnectTimerId) clearTimeout(this.reconnectTimerId);
@@ -164,12 +167,21 @@ export class ConnectionManager {
       conn.close("manager destroyed");
     }
     this.connections.clear();
+
+    // Belt-and-suspenders: conn.close() above synchronously re-enters handleDead()
+    // which may arm a new reconnect timer. Clear it again.
+    if (this.reconnectTimerId) {
+      clearTimeout(this.reconnectTimerId);
+      this.reconnectTimerId = null;
+    }
   }
 
   // --- Private ---
 
   /** Create a connection immediately (no backoff). Use scheduleReconnect() for retries. */
   private createConnection(): void {
+    if (this.destroyed) return;
+
     const liveCount = this.countLive();
     if (liveCount >= ConnectionManager.MAX_LIVE_CONNECTIONS) {
       this.log(`Max live connections (${ConnectionManager.MAX_LIVE_CONNECTIONS}) reached`);
@@ -196,6 +208,8 @@ export class ConnectionManager {
 
   /** Schedule a reconnect using exponential backoff with jitter. */
   private scheduleReconnect(): void {
+    if (this.destroyed) return;
+
     if (this.consecutiveFailures >= ConnectionManager.BACKOFF_MAX_RETRIES) {
       this.log(`Max retries (${ConnectionManager.BACKOFF_MAX_RETRIES}) reached — stopped`);
       this.onUpdate();
@@ -237,6 +251,8 @@ export class ConnectionManager {
     oldState: ConnectionState,
     newState: ConnectionState,
   ): void => {
+    if (this.destroyed) return;
+
     this.log(`${conn.id}: ${oldState} → ${newState}${conn.id === this.activeId ? " (active)" : ""}`);
 
     switch (newState) {

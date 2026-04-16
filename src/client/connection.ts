@@ -11,12 +11,14 @@ export interface ConnectionConfig {
   pingIntervalMs: number;
   pongTimeoutMs: number;
   staleGracePeriodMs: number;
+  connectTimeoutMs: number;
 }
 
 export const DEFAULT_CONFIG: ConnectionConfig = {
   pingIntervalMs: 5_000,
   pongTimeoutMs: 3_000,
   staleGracePeriodMs: 15_000,
+  connectTimeoutMs: 10_000,
 };
 
 export interface ConnectionStats {
@@ -68,6 +70,7 @@ export class ManagedConnection {
 
   private pingIntervalId: ReturnType<typeof setInterval> | null = null;
   private staleTimeoutId: ReturnType<typeof setTimeout> | null = null;
+  private connectTimeoutId: ReturnType<typeof setTimeout> | null = null;
 
   private readonly config: ConnectionConfig;
   private readonly onStateChange: StateChangeCallback;
@@ -87,6 +90,14 @@ export class ManagedConnection {
     this.ws.onclose = this.handleClose.bind(this);
     this.ws.onerror = () => {}; // close always follows error
     this.ws.onmessage = this.handleMessage.bind(this);
+
+    // Abort if the TCP/TLS handshake hangs (captive portal, SYN blackhole).
+    // Without this, a stuck CONNECTING socket blocks reconnection indefinitely.
+    this.connectTimeoutId = setTimeout(() => {
+      if (this.state === ConnectionState.NEW && this.ws.readyState === WebSocket.CONNECTING) {
+        this.close(`connect timeout after ${config.connectTimeoutMs}ms`);
+      }
+    }, config.connectTimeoutMs);
   }
 
   get currentState(): ConnectionState {
@@ -174,6 +185,10 @@ export class ManagedConnection {
   // --- Private ---
 
   private handleOpen(): void {
+    if (this.connectTimeoutId !== null) {
+      clearTimeout(this.connectTimeoutId);
+      this.connectTimeoutId = null;
+    }
     this.transitionTo(ConnectionState.ALIVE);
     this.pingIntervalId = setInterval(() => this.sendPing(), this.config.pingIntervalMs);
     this.sendPing();
@@ -243,6 +258,10 @@ export class ManagedConnection {
   }
 
   private clearAllTimers(): void {
+    if (this.connectTimeoutId !== null) {
+      clearTimeout(this.connectTimeoutId);
+      this.connectTimeoutId = null;
+    }
     if (this.pingIntervalId !== null) {
       clearInterval(this.pingIntervalId);
       this.pingIntervalId = null;

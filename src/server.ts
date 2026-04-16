@@ -1,4 +1,5 @@
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
+import { randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join, extname } from "node:path";
 import { WebSocketServer, WebSocket } from "ws";
@@ -42,9 +43,72 @@ const wss = new WebSocketServer({ server, path: "/ws" });
 
 let connectionCount = 0;
 
+// Server-side heartbeat: detect and reap dead clients.
+// Protocol-level ping every 30s; terminate if the previous ping went unanswered.
+//
+// Design:
+// - Each ping carries a random 8-byte nonce. Only pongs echoing the current or
+//   previous nonce clear the pending flag. This rejects unsolicited pong frames
+//   (legal per RFC 6455 § 5.5.3) that could keep dead connections alive.
+// - Termination is deferred to setImmediate (check phase) so that pong handlers
+//   queued during an event-loop stall run first (I/O poll phase). Node event loop:
+//   timers → I/O poll → check. This avoids false-positive disconnects after server
+//   pauses, debugger stops, or CPU spikes.
+// - The "previous nonce" acceptance window is needed because after a stall, the
+//   timer may rotate the nonce before the pong for the old nonce is processed.
+const HEARTBEAT_MS = 30_000;
+
+interface SocketHeartbeat {
+  nonce: Buffer;
+  prevNonce: Buffer | null;
+  pending: boolean;
+}
+const hbState = new WeakMap<WebSocket, SocketHeartbeat>();
+
+const heartbeat = setInterval(() => {
+  const candidates: WebSocket[] = [];
+  for (const ws of wss.clients) {
+    const hb = hbState.get(ws);
+    if (!hb) continue;
+    // Collect if previous ping went unanswered, then rotate and send new ping
+    if (hb.pending) candidates.push(ws);
+    const nonce = randomBytes(8);
+    hb.prevNonce = hb.nonce;
+    hb.nonce = nonce;
+    hb.pending = true;
+    ws.ping(nonce);
+  }
+
+  // Defer termination to setImmediate (runs after I/O poll phase, giving
+  // buffered pong handlers a chance to clear the pending flag first).
+  if (candidates.length > 0) {
+    setImmediate(() => {
+      for (const ws of candidates) {
+        const hb = hbState.get(ws);
+        if (hb && hb.pending) {
+          console.log(`[ws] terminating unresponsive client`);
+          ws.terminate();
+        }
+      }
+    });
+  }
+}, HEARTBEAT_MS);
+
+wss.on("close", () => clearInterval(heartbeat));
+
 wss.on("connection", (ws: WebSocket) => {
   const id = ++connectionCount;
   console.log(`[ws] #${id} connected (total: ${wss.clients.size})`);
+
+  hbState.set(ws, { nonce: randomBytes(8), prevNonce: null, pending: false });
+  ws.on("pong", (data: Buffer) => {
+    const hb = hbState.get(ws);
+    if (!hb) return;
+    // Only accept pongs echoing our current or previous nonce
+    if (data.equals(hb.nonce) || (hb.prevNonce !== null && data.equals(hb.prevNonce))) {
+      hb.pending = false;
+    }
+  });
 
   ws.on("message", (data: Buffer) => {
     let msg: PingMessage;
@@ -75,15 +139,6 @@ wss.on("connection", (ws: WebSocket) => {
   ws.on("error", (err: Error) => {
     console.error(`[ws] #${id} error: ${err.message}`);
   });
-
-  // Server-side keep-alive: protocol-level ping every 30s to detect dead TCP connections
-  const keepAlive = setInterval(() => {
-    if (ws.readyState === WebSocket.OPEN) {
-      ws.ping();
-    }
-  }, 30_000);
-
-  ws.on("close", () => clearInterval(keepAlive));
 });
 
 server.listen(PORT, () => {

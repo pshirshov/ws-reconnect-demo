@@ -38,6 +38,7 @@ export class UI {
         <div class="config-grid">
           <label>Ping interval <input type="number" id="cfg-ping" value="${DEFAULT_CONFIG.pingIntervalMs}" min="500" step="500">ms</label>
           <label>Pong timeout <input type="number" id="cfg-timeout" value="${DEFAULT_CONFIG.pongTimeoutMs}" min="500" step="500">ms</label>
+          <label>Connect timeout <input type="number" id="cfg-connect" value="${DEFAULT_CONFIG.connectTimeoutMs}" min="1000" step="1000">ms</label>
           <label>Stale grace <input type="number" id="cfg-grace" value="${DEFAULT_CONFIG.staleGracePeriodMs}" min="1000" step="1000">ms</label>
           <label>Dead retention <input type="number" id="cfg-retention" value="60000" min="5000" step="5000">ms</label>
         </div>
@@ -81,6 +82,7 @@ export class UI {
       const cfg: ConnectionConfig = {
         pingIntervalMs: parseInt(($("cfg-ping") as HTMLInputElement).value),
         pongTimeoutMs: parseInt(($("cfg-timeout") as HTMLInputElement).value),
+        connectTimeoutMs: parseInt(($("cfg-connect") as HTMLInputElement).value),
         staleGracePeriodMs: parseInt(($("cfg-grace") as HTMLInputElement).value),
       };
       const retention = parseInt(($("cfg-retention") as HTMLInputElement).value);
