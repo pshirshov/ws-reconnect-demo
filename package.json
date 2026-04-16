@@ -1,0 +1,19 @@
+{
+  "name": "websocket-reconnect-demo",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "esbuild src/client/index.ts --bundle --outfile=public/bundle.js --sourcemap",
+    "start": "npm run build && tsx src/server.ts"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.5.13",
+    "esbuild": "^0.25.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}

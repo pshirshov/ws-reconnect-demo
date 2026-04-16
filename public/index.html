@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>WS Reconnect Demo</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'SF Mono', 'Fira Code', 'JetBrains Mono', 'Cascadia Code', monospace;
+      background: #0d1117;
+      color: #c9d1d9;
+      padding: 20px;
+      line-height: 1.5;
+      font-size: 14px;
+    }
+
+    h1 { color: #58a6ff; margin-bottom: 16px; font-size: 1.4em; }
+    h2 {
+      color: #8b949e;
+      font-size: 0.8em;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      margin-bottom: 8px;
+    }
+
+    /* Sections */
+    .section {
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 6px;
+      padding: 14px;
+      margin-bottom: 12px;
+    }
+
+    /* Config */
+    .config-grid {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+    .config-grid label {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 0.85em;
+      color: #8b949e;
+    }
+    .config-grid input {
+      background: #0d1117;
+      border: 1px solid #30363d;
+      color: #c9d1d9;
+      padding: 3px 6px;
+      border-radius: 4px;
+      font-family: inherit;
+      font-size: 0.9em;
+      width: 72px;
+      text-align: right;
+    }
+
+    /* Buttons */
+    .btn-row { display: flex; gap: 6px; flex-wrap: wrap; }
+    button {
+      background: #21262d;
+      color: #c9d1d9;
+      border: 1px solid #30363d;
+      padding: 5px 10px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-family: inherit;
+      font-size: 0.82em;
+      transition: background 0.15s;
+    }
+    button:hover { background: #30363d; }
+    button:active { background: #3a424b; }
+
+    /* Status bar */
+    #status-bar {
+      font-size: 0.9em;
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    /* Badges */
+    .badge {
+      display: inline-block;
+      padding: 1px 8px;
+      border-radius: 10px;
+      font-size: 0.78em;
+      font-weight: 700;
+    }
+    .badge-new     { background: #1f6feb33; color: #58a6ff; }
+    .badge-alive   { background: #23863533; color: #3fb950; }
+    .badge-stale   { background: #9e6a0333; color: #d29922; }
+    .badge-dead    { background: #f8514933; color: #f85149; }
+    .badge-active  { background: #1f6feb22; color: #58a6ff; }
+    .badge-frozen  { background: #79c0ff22; color: #79c0ff; }
+    .frozen-badge  { background: #79c0ff33; color: #79c0ff; padding: 1px 8px; border-radius: 10px; font-weight: 700; font-size: 0.85em; }
+
+    .state-new   { color: #58a6ff; }
+    .state-alive { color: #3fb950; }
+    .state-stale { color: #d29922; }
+    .state-dead  { color: #f85149; }
+
+    /* Connection cards */
+    .card {
+      background: #0d1117;
+      border: 1px solid #30363d;
+      border-left: 3px solid #30363d;
+      border-radius: 4px;
+      padding: 10px 12px;
+      margin-bottom: 6px;
+    }
+    .card-new   { border-left-color: #58a6ff; }
+    .card-alive { border-left-color: #3fb950; }
+    .card-stale { border-left-color: #d29922; }
+    .card-dead  { border-left-color: #f85149; opacity: 0.7; }
+    .card-active { border-color: #58a6ff; border-left-color: #58a6ff; }
+
+    .card-hdr {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 6px;
+    }
+    .card-id { font-weight: 700; color: #e6edf3; }
+
+    .card-body { font-size: 0.82em; color: #8b949e; }
+    .row {
+      display: flex;
+      gap: 14px;
+      flex-wrap: wrap;
+      margin-bottom: 1px;
+    }
+    .close-reason { color: #f85149; font-style: italic; margin-top: 4px; }
+
+    /* RTT bar */
+    .rtt-bar {
+      display: inline-block;
+      width: 60px;
+      height: 8px;
+      background: #21262d;
+      border-radius: 4px;
+      overflow: hidden;
+      vertical-align: middle;
+    }
+    .rtt-fill {
+      display: block;
+      height: 100%;
+      background: #3fb950;
+      border-radius: 4px;
+      transition: width 0.2s;
+    }
+
+    /* Log */
+    #log-list {
+      max-height: 280px;
+      overflow-y: auto;
+      font-size: 0.8em;
+    }
+    .log-row {
+      padding: 1px 0;
+      border-bottom: 1px solid #161b22;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .log-ts { color: #484f58; margin-right: 6px; }
+
+    .empty { color: #484f58; font-style: italic; padding: 6px; }
+
+    /* Scrollbar */
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: #161b22; }
+    ::-webkit-scrollbar-thumb { background: #30363d; border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: #484f58; }
+  </style>
+</head>
+<body>
+  <div id="app"></div>
+  <script src="/bundle.js"></script>
+</body>
+</html>
