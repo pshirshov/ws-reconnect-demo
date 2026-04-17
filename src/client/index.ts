@@ -10,7 +10,7 @@ let ui: UI | null = null;
 const manager = new ConnectionManager(
   wsUrl,
   { ...DEFAULT_CONFIG },
-  60_000,
+  30_000,
   () => ui?.requestUpdate(),
 );
 

@@ -82,8 +82,139 @@
       display: flex;
       gap: 8px;
       align-items: center;
+      justify-content: space-between;
       flex-wrap: wrap;
     }
+    #status-text {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    /* Connection indicator widget */
+    .ws-indicator {
+      position: relative;
+      width: 32px;
+      height: 32px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      cursor: help;
+      flex-shrink: 0;
+    }
+    .ws-indicator-svg {
+      position: absolute;
+      inset: 0;
+      transform: rotate(-90deg);
+      pointer-events: none;
+    }
+    .ws-indicator-arc {
+      transition: stroke-dashoffset 140ms linear, opacity 120ms ease-out, stroke 150ms ease;
+    }
+    .ws-indicator-dot {
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      transition: background 150ms ease, box-shadow 150ms ease;
+      position: relative;
+    }
+    /* Per-state colors */
+    .ws-indicator[data-state="alive"]       .ws-indicator-dot { background: #3fb950; box-shadow: 0 0 6px #3fb95088; }
+    .ws-indicator[data-state="alive"]       .ws-indicator-arc { stroke: #3fb950; }
+    .ws-indicator[data-state="stale"]       .ws-indicator-dot { background: #f0883e; box-shadow: 0 0 6px #f0883e88; }
+    .ws-indicator[data-state="stale"]       .ws-indicator-arc { stroke: #f0883e; }
+    .ws-indicator[data-state="connecting"]  .ws-indicator-dot { background: #e3b341; box-shadow: 0 0 6px #e3b34188; animation: ws-pulse 1.2s ease-in-out infinite; }
+    .ws-indicator[data-state="connecting"]  .ws-indicator-arc { stroke: #e3b341; }
+    .ws-indicator[data-state="dead"]        .ws-indicator-dot { background: #f85149; box-shadow: 0 0 6px #f8514988; }
+    .ws-indicator[data-state="dead"]        .ws-indicator-arc { stroke: #f85149; }
+    .ws-indicator[data-state="terminal"]    .ws-indicator-dot {
+      background: #6e1e1e;
+      box-shadow: 0 0 0 2px #161b22, 0 0 0 3px #f85149, 0 0 10px #f85149aa;
+    }
+    .ws-indicator[data-state="terminal"]    .ws-indicator-arc {
+      stroke: #f85149;
+      stroke-dasharray: 4 4;
+      opacity: 1 !important;
+      stroke-dashoffset: 0 !important;
+    }
+    .ws-indicator[data-state="frozen"]      .ws-indicator-dot { background: #79c0ff; box-shadow: 0 0 6px #79c0ff88; }
+    .ws-indicator[data-state="frozen"]      .ws-indicator-arc { stroke: #79c0ff; opacity: 0 !important; }
+
+    @keyframes ws-pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.45; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .ws-indicator-dot, .ws-indicator-arc { animation: none !important; transition: none !important; }
+    }
+
+    /* Tooltip */
+    .ws-indicator-tooltip {
+      position: absolute;
+      right: 0;
+      top: calc(100% + 6px);
+      min-width: 280px;
+      background: #0d1117;
+      border: 1px solid #30363d;
+      border-radius: 6px;
+      padding: 10px 12px;
+      font-size: 0.82em;
+      color: #c9d1d9;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.6);
+      z-index: 100;
+      opacity: 0;
+      pointer-events: none;
+      transform: translateY(-4px);
+      transition: opacity 120ms ease, transform 120ms ease;
+      white-space: nowrap;
+    }
+    .ws-indicator:hover .ws-indicator-tooltip,
+    .ws-indicator:focus-within .ws-indicator-tooltip {
+      opacity: 1;
+      transform: translateY(0);
+    }
+    .tt-state {
+      font-weight: 700;
+      margin-bottom: 6px;
+      padding-bottom: 4px;
+      border-bottom: 1px solid #21262d;
+    }
+    .tt-state-alive      { color: #3fb950; }
+    .tt-state-stale      { color: #f0883e; }
+    .tt-state-connecting { color: #e3b341; }
+    .tt-state-dead       { color: #f85149; }
+    .tt-state-terminal   { color: #f85149; }
+    .tt-state-frozen     { color: #79c0ff; }
+    .tt-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 1px 0;
+    }
+    .tt-row > span:first-child { color: #8b949e; }
+    .tt-dim { color: #484f58; }
+    .tt-warn { color: #f85149; }
+    .tt-close { color: #f85149; font-style: italic; white-space: normal; max-width: 280px; }
+    .tt-rtt {
+      width: 100%;
+      margin-top: 6px;
+      border-collapse: collapse;
+      font-variant-numeric: tabular-nums;
+    }
+    .tt-rtt th {
+      text-align: right;
+      color: #8b949e;
+      font-weight: 400;
+      padding: 2px 4px;
+      border-bottom: 1px solid #21262d;
+    }
+    .tt-rtt th:first-child { text-align: left; }
+    .tt-rtt td {
+      text-align: right;
+      padding: 1px 4px;
+    }
+    .tt-rtt td:first-child { text-align: left; color: #8b949e; }
 
     /* Badges */
     .badge {

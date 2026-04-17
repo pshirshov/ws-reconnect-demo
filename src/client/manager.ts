@@ -9,6 +9,12 @@ export interface ManagerStats {
   connections: ConnectionStats[];
   activeConnectionId: string | null;
   frozen: boolean;
+  consecutiveFailures: number;
+  maxRetries: number;
+  reconnectScheduledAt: number | null;
+  reconnectDelayMs: number | null;
+  reconnectDeferredUntilVisible: boolean;
+  isTerminal: boolean;
 }
 
 export interface LogEntry {
@@ -30,7 +36,10 @@ export class ConnectionManager {
   // Reconnection with exponential backoff + jitter
   private consecutiveFailures = 0;
   private reconnectTimerId: ReturnType<typeof setTimeout> | null = null;
+  private reconnectScheduledAt: number | null = null;
+  private reconnectDelayMs: number | null = null;
   private pendingReconnectOnVisible = false;
+  private isTerminal = false;
   private static readonly BACKOFF_BASE_MS = 1_000;
   private static readonly BACKOFF_MAX_MS = 30_000;
   private static readonly BACKOFF_MAX_RETRIES = 15;
@@ -85,6 +94,12 @@ export class ConnectionManager {
       connections,
       activeConnectionId: this.activeId,
       frozen: this.frozen,
+      consecutiveFailures: this.consecutiveFailures,
+      maxRetries: ConnectionManager.BACKOFF_MAX_RETRIES,
+      reconnectScheduledAt: this.reconnectScheduledAt,
+      reconnectDelayMs: this.reconnectDelayMs,
+      reconnectDeferredUntilVisible: this.pendingReconnectOnVisible,
+      isTerminal: this.isTerminal,
     };
   }
 
@@ -108,10 +123,13 @@ export class ConnectionManager {
     this.activeId = null;
     this.consecutiveFailures = 0;
     this.pendingReconnectOnVisible = false;
+    this.isTerminal = false;
     if (this.reconnectTimerId !== null) {
       clearTimeout(this.reconnectTimerId);
       this.reconnectTimerId = null;
     }
+    this.reconnectScheduledAt = null;
+    this.reconnectDelayMs = null;
     for (const conn of this.connections.values()) {
       conn.close("user initiated reconnect");
     }
@@ -212,6 +230,7 @@ export class ConnectionManager {
 
     if (this.consecutiveFailures >= ConnectionManager.BACKOFF_MAX_RETRIES) {
       this.log(`Max retries (${ConnectionManager.BACKOFF_MAX_RETRIES}) reached — stopped`);
+      this.isTerminal = true;
       this.onUpdate();
       return;
     }
@@ -230,11 +249,16 @@ export class ConnectionManager {
     this.log(`Reconnecting in ${Math.round(delay)}ms (attempt ${this.consecutiveFailures}/${ConnectionManager.BACKOFF_MAX_RETRIES})`);
 
     if (this.reconnectTimerId !== null) clearTimeout(this.reconnectTimerId);
+    this.reconnectScheduledAt = Date.now() + delay;
+    this.reconnectDelayMs = delay;
     this.reconnectTimerId = setTimeout(() => {
       this.reconnectTimerId = null;
+      this.reconnectScheduledAt = null;
+      this.reconnectDelayMs = null;
       if (this.needsNewConnection()) {
         this.createConnection();
       }
+      this.onUpdate();
     }, delay);
   }
 
@@ -274,10 +298,13 @@ export class ConnectionManager {
     // Successful connection resets backoff
     this.consecutiveFailures = 0;
     this.pendingReconnectOnVisible = false;
+    this.isTerminal = false;
     if (this.reconnectTimerId !== null) {
       clearTimeout(this.reconnectTimerId);
       this.reconnectTimerId = null;
     }
+    this.reconnectScheduledAt = null;
+    this.reconnectDelayMs = null;
 
     if (this.activeId === null) {
       this.activeId = conn.id;
@@ -316,6 +343,7 @@ export class ConnectionManager {
       const stats = conn.getStats();
       if (stats.closeCode !== null && ConnectionManager.NON_RETRIABLE_CODES.has(stats.closeCode)) {
         this.log(`Close code ${stats.closeCode} is non-retriable — stopped`);
+        this.isTerminal = true;
         return;
       }
 

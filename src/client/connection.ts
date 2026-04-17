@@ -15,11 +15,16 @@ export interface ConnectionConfig {
 }
 
 export const DEFAULT_CONFIG: ConnectionConfig = {
-  pingIntervalMs: 5_000,
-  pongTimeoutMs: 3_000,
-  staleGracePeriodMs: 15_000,
-  connectTimeoutMs: 10_000,
+  pingIntervalMs: 2_000,
+  pongTimeoutMs: 1_500,
+  staleGracePeriodMs: 6_000,
+  connectTimeoutMs: 5_000,
 };
+
+export interface RttSample {
+  rtt: number;
+  receivedAt: number;
+}
 
 export interface ConnectionStats {
   id: string;
@@ -32,8 +37,10 @@ export interface ConnectionStats {
   minRtt: number | null;
   maxRtt: number | null;
   pendingPingCount: number;
+  earliestPendingPingSentAt: number | null;
   totalPingsSent: number;
   totalPongsReceived: number;
+  rttSamples: ReadonlyArray<RttSample>;
   staleAt: number | null;
   deadAt: number | null;
   closeCode: number | null;
@@ -58,10 +65,10 @@ export class ManagedConnection {
   private lastPingSentAt: number | null = null;
   private lastPongReceivedAt: number | null = null;
   private lastRtt: number | null = null;
-  private rttSamples: number[] = [];
+  private rttSamples: RttSample[] = [];
   private totalPingsSent = 0;
   private totalPongsReceived = 0;
-  private static readonly MAX_RTT_SAMPLES = 50;
+  private static readonly MAX_RTT_SAMPLES = 500;
 
   private staleAt: number | null = null;
   private deadAt: number | null = null;
@@ -106,6 +113,16 @@ export class ManagedConnection {
 
   getStats(): ConnectionStats {
     const rtt = this.rttSamples;
+    let min = Infinity, max = -Infinity, sum = 0;
+    for (const s of rtt) {
+      if (s.rtt < min) min = s.rtt;
+      if (s.rtt > max) max = s.rtt;
+      sum += s.rtt;
+    }
+    let earliestPending: number | null = null;
+    for (const sentAt of this.pendingPings.values()) {
+      if (earliestPending === null || sentAt < earliestPending) earliestPending = sentAt;
+    }
     return {
       id: this.id,
       state: this.state,
@@ -113,12 +130,14 @@ export class ManagedConnection {
       lastPingSentAt: this.lastPingSentAt,
       lastPongReceivedAt: this.lastPongReceivedAt,
       lastRtt: this.lastRtt,
-      avgRtt: rtt.length > 0 ? Math.round(rtt.reduce((a, b) => a + b, 0) / rtt.length) : null,
-      minRtt: rtt.length > 0 ? Math.min(...rtt) : null,
-      maxRtt: rtt.length > 0 ? Math.max(...rtt) : null,
+      avgRtt: rtt.length > 0 ? Math.round(sum / rtt.length) : null,
+      minRtt: rtt.length > 0 ? min : null,
+      maxRtt: rtt.length > 0 ? max : null,
       pendingPingCount: this.pendingPings.size,
+      earliestPendingPingSentAt: earliestPending,
       totalPingsSent: this.totalPingsSent,
       totalPongsReceived: this.totalPongsReceived,
+      rttSamples: rtt,
       staleAt: this.staleAt,
       deadAt: this.deadAt,
       closeCode: this.closeCode,
@@ -226,7 +245,7 @@ export class ManagedConnection {
     this.lastRtt = rtt;
     this.totalPongsReceived++;
 
-    this.rttSamples.push(rtt);
+    this.rttSamples.push({ rtt, receivedAt: now });
     if (this.rttSamples.length > ManagedConnection.MAX_RTT_SAMPLES) {
       this.rttSamples.shift();
     }

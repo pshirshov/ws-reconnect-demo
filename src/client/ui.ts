@@ -1,6 +1,8 @@
-import type { ConnectionManager } from "./manager.js";
+import type { ConnectionManager, ManagerStats } from "./manager.js";
 import { ConnectionState, DEFAULT_CONFIG } from "./connection.js";
-import type { ConnectionConfig, ConnectionStats } from "./connection.js";
+import type { ConnectionConfig, ConnectionStats, RttSample } from "./connection.js";
+
+type WidgetState = "alive" | "stale" | "connecting" | "dead" | "terminal" | "frozen";
 
 export class UI {
   private manager: ConnectionManager;
@@ -40,7 +42,7 @@ export class UI {
           <label>Pong timeout <input type="number" id="cfg-timeout" value="${DEFAULT_CONFIG.pongTimeoutMs}" min="500" step="500">ms</label>
           <label>Connect timeout <input type="number" id="cfg-connect" value="${DEFAULT_CONFIG.connectTimeoutMs}" min="1000" step="1000">ms</label>
           <label>Stale grace <input type="number" id="cfg-grace" value="${DEFAULT_CONFIG.staleGracePeriodMs}" min="1000" step="1000">ms</label>
-          <label>Dead retention <input type="number" id="cfg-retention" value="60000" min="5000" step="5000">ms</label>
+          <label>Dead retention <input type="number" id="cfg-retention" value="30000" min="5000" step="5000">ms</label>
         </div>
         <div class="btn-row">
           <button id="btn-apply">Apply &amp; Reconnect</button>
@@ -60,7 +62,18 @@ export class UI {
 
       <div class="section" id="status-section">
         <h2>Status</h2>
-        <div id="status-bar"></div>
+        <div id="status-bar">
+          <div id="status-text"></div>
+          <div id="ws-indicator" class="ws-indicator" data-state="dead" aria-label="Connection status">
+            <svg class="ws-indicator-svg" viewBox="0 0 32 32" width="32" height="32" aria-hidden="true">
+              <circle class="ws-indicator-arc" cx="16" cy="16" r="13"
+                fill="none" stroke-width="2.5"
+                stroke-dasharray="81.68" stroke-dashoffset="0"/>
+            </svg>
+            <div class="ws-indicator-dot"></div>
+            <div class="ws-indicator-tooltip" id="ws-indicator-tooltip"></div>
+          </div>
+        </div>
       </div>
 
       <div class="section">
@@ -127,8 +140,37 @@ export class UI {
     if (counts.DEAD) parts.push(`<span class="state-dead">${counts.DEAD} dead</span>`);
 
     const frozen = stats.frozen ? ' <span class="frozen-badge">FROZEN</span>' : "";
-    document.getElementById("status-bar")!.innerHTML =
+    document.getElementById("status-text")!.innerHTML =
       `${stats.connections.length} connection${stats.connections.length !== 1 ? "s" : ""}: ${parts.join(", ") || "none"}${frozen}`;
+
+    this.renderIndicator(stats);
+  }
+
+  private renderIndicator(stats: ReturnType<ConnectionManager["getStats"]>): void {
+    const indicator = document.getElementById("ws-indicator")!;
+    const arc = indicator.querySelector(".ws-indicator-arc") as SVGCircleElement;
+    const tooltip = document.getElementById("ws-indicator-tooltip")!;
+
+    const widgetState = deriveWidgetState(stats);
+    indicator.setAttribute("data-state", widgetState);
+
+    const active = stats.activeConnectionId !== null
+      ? stats.connections.find(c => c.id === stats.activeConnectionId) ?? null
+      : null;
+
+    // Ring = fraction of time remaining in the current waiting phase.
+    // 1 = full ring; 0 = empty; null = hide entirely (terminal uses a CSS override).
+    const remaining = computeRingRemaining(widgetState, active, stats, this.manager.getConfig());
+    const CIRCUMFERENCE = 81.68; // 2 * π * 13
+    if (remaining === null) {
+      arc.style.opacity = "0";
+      arc.style.strokeDashoffset = "0";
+    } else {
+      arc.style.opacity = "1";
+      arc.style.strokeDashoffset = String(CIRCUMFERENCE * (1 - remaining));
+    }
+
+    tooltip.innerHTML = renderTooltipHtml(stats, widgetState, active);
   }
 
   private renderConnections(stats: ReturnType<ConnectionManager["getStats"]>): void {
@@ -222,4 +264,153 @@ function ms(val: number | null): string {
 
 function esc(text: string): string {
   return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+function clamp01(n: number): number {
+  return n < 0 ? 0 : n > 1 ? 1 : n;
+}
+
+function computeRingRemaining(
+  widgetState: WidgetState,
+  active: ConnectionStats | null,
+  stats: ManagerStats,
+  config: ConnectionConfig,
+): number | null {
+  if (widgetState === "alive") {
+    if (active === null || active.earliestPendingPingSentAt === null) return 1;
+    const elapsed = Date.now() - active.earliestPendingPingSentAt;
+    return clamp01(1 - elapsed / config.pongTimeoutMs);
+  }
+  if (widgetState === "stale") {
+    if (active === null || active.staleAt === null) return 1;
+    const elapsed = Date.now() - active.staleAt;
+    return clamp01(1 - elapsed / config.staleGracePeriodMs);
+  }
+  if (widgetState === "connecting") {
+    if (stats.reconnectScheduledAt !== null && stats.reconnectDelayMs !== null && stats.reconnectDelayMs > 0) {
+      const remaining = stats.reconnectScheduledAt - Date.now();
+      return clamp01(remaining / stats.reconnectDelayMs);
+    }
+    // NEW connection: show connect-timeout budget depleting
+    const newest = stats.connections.find(c => c.state === ConnectionState.NEW);
+    if (newest) {
+      const elapsed = Date.now() - newest.createdAt;
+      return clamp01(1 - elapsed / config.connectTimeoutMs);
+    }
+    return null;
+  }
+  // dead / terminal / frozen: ring hidden (terminal overridden by CSS)
+  return null;
+}
+
+function deriveWidgetState(stats: ManagerStats): WidgetState {
+  if (stats.frozen) return "frozen";
+  const seen = new Set(stats.connections.map(c => c.state));
+  if (seen.has(ConnectionState.ALIVE)) return "alive";
+  if (seen.has(ConnectionState.STALE)) return "stale";
+  if (seen.has(ConnectionState.NEW)) return "connecting";
+  if (stats.isTerminal) return "terminal";
+  if (stats.reconnectScheduledAt !== null || stats.reconnectDeferredUntilVisible) return "connecting";
+  return "dead";
+}
+
+function rttWindow(samples: ReadonlyArray<RttSample>, withinMs: number):
+  { min: number; median: number; max: number; count: number } | null
+{
+  const cutoff = Date.now() - withinMs;
+  const vals: number[] = [];
+  for (const s of samples) {
+    if (s.receivedAt >= cutoff) vals.push(s.rtt);
+  }
+  if (vals.length === 0) return null;
+  vals.sort((a, b) => a - b);
+  return {
+    min: vals[0],
+    max: vals[vals.length - 1],
+    median: vals[Math.floor(vals.length / 2)],
+    count: vals.length,
+  };
+}
+
+function formatUptime(since: number): string {
+  const d = Date.now() - since;
+  if (d < 1_000) return "<1s";
+  if (d < 60_000) return `${Math.floor(d / 1_000)}s`;
+  if (d < 3_600_000) return `${Math.floor(d / 60_000)}m ${Math.floor((d % 60_000) / 1_000)}s`;
+  return `${Math.floor(d / 3_600_000)}h ${Math.floor((d % 3_600_000) / 60_000)}m`;
+}
+
+function stateLabel(s: WidgetState): string {
+  switch (s) {
+    case "alive": return "ALIVE";
+    case "stale": return "STALE (recovering)";
+    case "connecting": return "CONNECTING";
+    case "dead": return "DEAD";
+    case "terminal": return "STOPPED";
+    case "frozen": return "FROZEN";
+  }
+}
+
+function renderTooltipHtml(stats: ManagerStats, widgetState: WidgetState, active: ConnectionStats | null): string {
+  const lines: string[] = [];
+  lines.push(`<div class="tt-state tt-state-${widgetState}">${stateLabel(widgetState)}</div>`);
+
+  // Pool summary
+  const counts = { NEW: 0, ALIVE: 0, STALE: 0, DEAD: 0 };
+  for (const c of stats.connections) counts[c.state]++;
+  const poolParts: string[] = [];
+  if (counts.ALIVE) poolParts.push(`${counts.ALIVE} alive`);
+  if (counts.NEW) poolParts.push(`${counts.NEW} new`);
+  if (counts.STALE) poolParts.push(`${counts.STALE} stale`);
+  if (counts.DEAD) poolParts.push(`${counts.DEAD} dead`);
+  lines.push(`<div class="tt-row"><span>Pool</span><span>${stats.connections.length} conn${poolParts.length ? ` (${poolParts.join(", ")})` : ""}</span></div>`);
+
+  if (active !== null) {
+    lines.push(`<div class="tt-row"><span>Active</span><span>${esc(active.id)}</span></div>`);
+    lines.push(`<div class="tt-row"><span>Uptime</span><span>${formatUptime(active.createdAt)}</span></div>`);
+    lines.push(`<div class="tt-row"><span>In-flight</span><span>${active.pendingPingCount}</span></div>`);
+    if (active.totalPingsSent > 0) {
+      const lost = active.totalPingsSent - active.totalPongsReceived;
+      const pct = (lost / active.totalPingsSent * 100).toFixed(1);
+      lines.push(`<div class="tt-row"><span>Loss</span><span>${pct}% (${lost}/${active.totalPingsSent})</span></div>`);
+    }
+
+    // RTT windows
+    const w30 = rttWindow(active.rttSamples, 30_000);
+    const w60 = rttWindow(active.rttSamples, 60_000);
+    const w300 = rttWindow(active.rttSamples, 300_000);
+    if (w30 || w60 || w300) {
+      lines.push(`<table class="tt-rtt"><thead><tr><th>RTT</th><th>min</th><th>med</th><th>max</th><th>n</th></tr></thead><tbody>`);
+      for (const [label, w] of [["30s", w30], ["1m", w60], ["5m", w300]] as const) {
+        if (w) {
+          lines.push(`<tr><td>${label}</td><td>${w.min}</td><td>${w.median}</td><td>${w.max}</td><td>${w.count}</td></tr>`);
+        } else {
+          lines.push(`<tr><td>${label}</td><td colspan="4" class="tt-dim">—</td></tr>`);
+        }
+      }
+      lines.push(`</tbody></table>`);
+    }
+
+    if (active.closeReason !== null) {
+      lines.push(`<div class="tt-row tt-close"><span>Closed</span><span>${active.closeCode !== null ? `[${active.closeCode}] ` : ""}${esc(active.closeReason)}</span></div>`);
+    }
+  } else {
+    lines.push(`<div class="tt-row tt-dim"><span>Active</span><span>none</span></div>`);
+  }
+
+  // Backoff
+  if (stats.consecutiveFailures > 0 || stats.isTerminal || stats.reconnectDeferredUntilVisible) {
+    if (stats.isTerminal) {
+      lines.push(`<div class="tt-row tt-warn"><span>Backoff</span><span>stopped after ${stats.consecutiveFailures}/${stats.maxRetries}</span></div>`);
+    } else if (stats.reconnectDeferredUntilVisible) {
+      lines.push(`<div class="tt-row"><span>Backoff</span><span>deferred (tab hidden)</span></div>`);
+    } else if (stats.reconnectScheduledAt !== null) {
+      const secs = Math.max(0, (stats.reconnectScheduledAt - Date.now()) / 1000).toFixed(1);
+      lines.push(`<div class="tt-row"><span>Backoff</span><span>attempt ${stats.consecutiveFailures}/${stats.maxRetries}, in ${secs}s</span></div>`);
+    } else {
+      lines.push(`<div class="tt-row"><span>Backoff</span><span>attempt ${stats.consecutiveFailures}/${stats.maxRetries}</span></div>`);
+    }
+  }
+
+  return lines.join("");
 }
